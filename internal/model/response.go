@@ -22,19 +22,17 @@ type Criteria struct {
 }
 
 type Metadata struct {
-	TotalResults      int   `json:"total_results"`
-	ProvidersQueried  int   `json:"providers_queried"`
-	ProvidersSucceded int   `json:"providers_succeeded"`
-	ProvidersFailed   int   `json:"providers_failed"`
-	SearchTimeMS      int64 `json:"search_time_ms"`
-	CacheHit          bool  `json:"cache_hit"`
-
-	ProviderStatus []ProviderStatus `json:"provider_status,omitempty"`
-
-	DroppedResults  int `json:"dropped_results,omitempty"`
-	FilteredResults int `json:"filtered_results,omitempty"`
-
-	SortedBy string `json:"sorted_by,omitempty"`
+	TotalResults      int              `json:"total_results"`
+	ProvidersQueried  int              `json:"providers_queried"`
+	ProvidersSucceded int              `json:"providers_succeeded"`
+	ProvidersFailed   int              `json:"providers_failed"`
+	SearchTimeMS      int64            `json:"search_time_ms"`
+	CacheHit          bool             `json:"cache_hit"`
+	ProviderStatus    []ProviderStatus `json:"provider_status,omitempty"`
+	DroppedResults    int              `json:"dropped_results,omitempty"`
+	FilteredResults   int              `json:"filtered_results,omitempty"`
+	MergedDuplicates  int              `json:"merged_duplicates,omitempty"`
+	SortedBy          string           `json:"sorted_by,omitempty"`
 }
 
 type ProviderStatus struct {
@@ -46,24 +44,32 @@ type ProviderStatus struct {
 }
 
 type FlightView struct {
-	ID             string       `json:"id"`
-	Provider       string       `json:"provider"`
-	Airline        AirlineView  `json:"airline"`
-	FlightNumber   string       `json:"flight_number"`
-	Departure      EndpointView `json:"departure"`
-	Arrival        EndpointView `json:"arrival"`
-	Duration       DurationView `json:"duration"`
-	Stops          int          `json:"stops"`
-	Price          PriceView    `json:"price"`
-	AvailableSeats int          `json:"available_seats"`
-	CabinClass     string       `json:"cabin_class"`
-	Aircraft       *string      `json:"aircraft"`
-	Amenities      []string     `json:"amenities"`
-	Baggage        BaggageView  `json:"baggage"`
+	ID                string                 `json:"id"`
+	Provider          string                 `json:"provider"`
+	Airline           AirlineView            `json:"airline"`
+	FlightNumber      string                 `json:"flight_number"`
+	Departure         EndpointView           `json:"departure"`
+	Arrival           EndpointView           `json:"arrival"`
+	Duration          DurationView           `json:"duration"`
+	Stops             int                    `json:"stops"`
+	Price             PriceView              `json:"price"`
+	AvailableSeats    int                    `json:"available_seats"`
+	CabinClass        string                 `json:"cabin_class"`
+	Aircraft          *string                `json:"aircraft"`
+	Amenities         []string               `json:"amenities"`
+	Baggage           BaggageView            `json:"baggage"`
+	BestValueScore    float64                `json:"best_value_score"`
+	AlternativePrices []AlternativePriceView `json:"alternative_prices,omitempty"`
+	StopAirports      []string               `json:"stop_airports,omitempty"`
+	LayoverMinutes    int                    `json:"layover_minutes,omitempty"`
+	Warnings          []string               `json:"warnings,omitempty"`
+}
 
-	StopAirports   []string `json:"stop_airports,omitempty"`
-	LayoverMinutes int      `json:"layover_minutes,omitempty"`
-	Warnings       []string `json:"warnings,omitempty"`
+type AlternativePriceView struct {
+	Provider  string `json:"provider"`
+	Amount    int64  `json:"amount"`
+	Currency  string `json:"currency"`
+	Formatted string `json:"formatted,omitempty"`
 }
 
 type AirlineView struct {
@@ -117,7 +123,16 @@ func NewFlightView(f Flight) FlightView {
 		Aircraft:       f.Aircraft,
 		Amenities:      f.Amenities,
 		Baggage:        BaggageView{CarryOn: f.Baggage.CarryOn, Checked: f.Baggage.Checked},
+		BestValueScore: f.BestValueScore,
 		Warnings:       f.Warnings,
+	}
+	for _, alt := range f.AlternativePrices {
+		view.AlternativePrices = append(view.AlternativePrices, AlternativePriceView{
+			Provider:  alt.Provider,
+			Amount:    alt.Amount,
+			Currency:  alt.Currency,
+			Formatted: currency.Format(alt.Amount, alt.Currency),
+		})
 	}
 	if f.Stops() > 0 {
 		view.StopAirports = f.StopAirports()
