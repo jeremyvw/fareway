@@ -15,5 +15,6 @@ func buildProviders() []usecase.FlightClient {
 		lionair.New(airport.City),
 		batikair.New(airport.City),
 		airasia.New(airport.City),
+		// airasia.New(airport.City, airasia.WithFailureRate(1)),
 	}
 }
