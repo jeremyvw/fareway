@@ -1,3 +1,5 @@
+// Package model is the normalized vocabulary every other layer speaks. It imports
+// nothing from this project, so no provider quirk can leak inward.
 package model
 
 import (
@@ -25,6 +27,12 @@ type Place struct {
 type Baggage struct {
 	CarryOn string
 	Checked string
+}
+
+type AlternativePrice struct {
+	Provider string
+	Amount   int64
+	Currency string
 }
 
 type Stopover struct {
@@ -62,6 +70,14 @@ type Flight struct {
 	Amenities []string
 
 	Baggage Baggage
+
+	// AlternativePrices holds other providers' fares for this same flight, cheapest first,
+	// when more than one provider sells it. Empty otherwise.
+	AlternativePrices []AlternativePrice
+
+	// BestValueScore rates this flight 0-100 against the others in the same response, higher
+	// being better value. Only comparable within one result set — see scoreBestValue.
+	BestValueScore float64
 
 	// Warnings records inconsistencies found while normalizing — a provider's declared
 	// duration contradicting its own timestamps, for instance. The flight is still
