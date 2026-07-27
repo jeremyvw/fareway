@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"sync"
 	"time"
 
@@ -57,6 +56,11 @@ func (s *Service) Search(ctx context.Context, req model.SearchRequest) (model.Se
 		return model.SearchResponse{}, err
 	}
 
+	activeFilters, err := compileFilters(req.Filters)
+	if err != nil {
+		return model.SearchResponse{}, err
+	}
+
 	started := time.Now()
 	results := s.fanOut(ctx, req)
 	elapsed := time.Since(started)
@@ -103,10 +107,17 @@ func (s *Service) Search(ctx context.Context, req model.SearchRequest) (model.Se
 		return model.SearchResponse{}, ErrAllProvidersFailed
 	}
 
-	sortDefault(flights)
+	flights, filtered := applyFilters(flights, activeFilters)
+
+	// Sorting last, on the smallest set: filtering first means fewer comparisons.
+	if err := sortFlights(flights, req.Sort); err != nil {
+		return model.SearchResponse{}, err
+	}
 
 	response.Metadata.TotalResults = len(flights)
 	response.Metadata.DroppedResults = dropped
+	response.Metadata.FilteredResults = filtered
+	response.Metadata.SortedBy = string(req.Sort)
 	response.Flights = make([]model.FlightView, 0, len(flights))
 	for _, f := range flights {
 		response.Flights = append(response.Flights, model.NewFlightView(f))
@@ -160,19 +171,6 @@ func (s *Service) accept(req model.SearchRequest, flights []model.Flight) (kept 
 		dropped++
 	}
 	return kept, dropped
-}
-
-func sortDefault(flights []model.Flight) {
-	sort.SliceStable(flights, func(i, j int) bool {
-		a, b := flights[i], flights[j]
-		if a.Price.Amount != b.Price.Amount {
-			return a.Price.Amount < b.Price.Amount
-		}
-		if !a.DepartAt().Equal(b.DepartAt()) {
-			return a.DepartAt().Before(b.DepartAt())
-		}
-		return a.ID < b.ID
-	})
 }
 
 func validateRequest(req model.SearchRequest) error {

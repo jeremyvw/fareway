@@ -30,7 +30,11 @@ type Metadata struct {
 	CacheHit          bool  `json:"cache_hit"`
 
 	ProviderStatus []ProviderStatus `json:"provider_status,omitempty"`
-	DroppedResults int              `json:"dropped_results,omitempty"`
+
+	DroppedResults  int `json:"dropped_results,omitempty"`
+	FilteredResults int `json:"filtered_results,omitempty"`
+
+	SortedBy string `json:"sorted_by,omitempty"`
 }
 
 type ProviderStatus struct {
