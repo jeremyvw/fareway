@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -335,4 +336,58 @@ func TestEmptyResultIsAnArrayNotNull(t *testing.T) {
 	if got.Flights == nil {
 		t.Error("flights = null, want an empty array")
 	}
+}
+
+func TestSearchScoresAndRanksResults(t *testing.T) {
+	// Deliberately in an order that is neither price nor best value, so a missing sort shows up.
+	service := New(DefaultConfig(), fakeClient{name: "A", flights: []model.Flight{
+		withStop(t, flight(t, "cheap-slow", 485000, 10), 200),
+		flight(t, "mid-fast", 950000, 10),
+		flight(t, "high-direct", 1450000, 10),
+	}})
+
+	got, err := service.Search(context.Background(), request())
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if got.Metadata.SortedBy != string(model.SortBestValue) {
+		t.Fatalf("sorted_by = %q, want best_value", got.Metadata.SortedBy)
+	}
+	if len(got.Flights) != 3 {
+		t.Fatalf("got %d flights, want 3", len(got.Flights))
+	}
+
+	for _, f := range got.Flights {
+		if f.BestValueScore == 0 {
+			t.Errorf("%s has a zero best_value_score; scoring did not run in the pipeline", f.ID)
+		}
+	}
+
+	for i := 1; i < len(got.Flights); i++ {
+		if got.Flights[i-1].BestValueScore < got.Flights[i].BestValueScore {
+			t.Errorf("results are not in descending score order: %v", scoreList(got.Flights))
+		}
+	}
+
+	if got.Flights[0].ID != "mid-fast" {
+		t.Errorf("first result = %q, want mid-fast; scores were %v", got.Flights[0].ID, scoreList(got.Flights))
+	}
+}
+
+func withStop(t *testing.T, f model.Flight, waitMinutes int) model.Flight {
+	t.Helper()
+	f.Stopovers = []model.Stopover{{
+		Airport:     model.Place{Airport: "SUB", City: "Surabaya"},
+		WaitMinutes: waitMinutes,
+	}}
+	f.Segments[0].Arrive = f.Segments[0].Arrive.Add(4 * time.Hour)
+	return f
+}
+
+func scoreList(views []model.FlightView) []string {
+	out := make([]string, 0, len(views))
+	for _, v := range views {
+		out = append(out, fmt.Sprintf("%s=%.1f", v.ID, v.BestValueScore))
+	}
+	return out
 }

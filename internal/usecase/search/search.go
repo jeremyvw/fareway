@@ -109,6 +109,10 @@ func (s *Service) Search(ctx context.Context, req model.SearchRequest) (model.Se
 
 	flights, filtered := applyFilters(flights, activeFilters)
 
+	flights, merged := dedupeAcrossProviders(flights)
+
+	scoreBestValue(flights)
+
 	// Sorting last, on the smallest set: filtering first means fewer comparisons.
 	if err := sortFlights(flights, req.Sort); err != nil {
 		return model.SearchResponse{}, err
@@ -117,6 +121,7 @@ func (s *Service) Search(ctx context.Context, req model.SearchRequest) (model.Se
 	response.Metadata.TotalResults = len(flights)
 	response.Metadata.DroppedResults = dropped
 	response.Metadata.FilteredResults = filtered
+	response.Metadata.MergedDuplicates = merged
 	response.Metadata.SortedBy = string(req.Sort)
 	response.Flights = make([]model.FlightView, 0, len(flights))
 	for _, f := range flights {
