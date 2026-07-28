@@ -54,6 +54,6 @@ func (r *SearchRequest) Normalize() {
 		r.CabinClass = "economy"
 	}
 	if r.Sort == "" {
-		r.Sort = SortPriceAsc
+		r.Sort = SortBestValue
 	}
 }

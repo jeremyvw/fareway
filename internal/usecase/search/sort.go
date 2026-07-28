@@ -29,6 +29,8 @@ func sortFlights(flights []model.Flight, option model.SortOption) error {
 
 func comparator(option model.SortOption) (func(a, b model.Flight) bool, error) {
 	switch option {
+	case model.SortBestValue:
+		return func(a, b model.Flight) bool { return a.BestValueScore > b.BestValueScore }, nil
 	case model.SortPriceAsc:
 		return func(a, b model.Flight) bool { return a.Price.Amount < b.Price.Amount }, nil
 	case model.SortPriceDesc:

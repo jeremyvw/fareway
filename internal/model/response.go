@@ -22,17 +22,29 @@ type Criteria struct {
 }
 
 type Metadata struct {
-	TotalResults      int              `json:"total_results"`
-	ProvidersQueried  int              `json:"providers_queried"`
-	ProvidersSucceded int              `json:"providers_succeeded"`
-	ProvidersFailed   int              `json:"providers_failed"`
-	SearchTimeMS      int64            `json:"search_time_ms"`
-	CacheHit          bool             `json:"cache_hit"`
-	ProviderStatus    []ProviderStatus `json:"provider_status,omitempty"`
-	DroppedResults    int              `json:"dropped_results,omitempty"`
-	FilteredResults   int              `json:"filtered_results,omitempty"`
-	MergedDuplicates  int              `json:"merged_duplicates,omitempty"`
-	SortedBy          string           `json:"sorted_by,omitempty"`
+	TotalResults      int   `json:"total_results"`
+	ProvidersQueried  int   `json:"providers_queried"`
+	ProvidersSucceded int   `json:"providers_succeeded"`
+	ProvidersFailed   int   `json:"providers_failed"`
+	SearchTimeMS      int64 `json:"search_time_ms"`
+	CacheHit          bool  `json:"cache_hit"`
+
+	ProviderStatus []ProviderStatus `json:"provider_status,omitempty"`
+
+	// DroppedResults counts records discarded as unusable or as not matching the route,
+	// date, cabin or passenger count.
+	DroppedResults int `json:"dropped_results,omitempty"`
+	// FilteredResults counts those removed by the caller's
+	// own filters — a different thing, and conflating them would hide which one emptied a
+	// result set.
+	FilteredResults int `json:"filtered_results,omitempty"`
+
+	// MergedDuplicates counts results collapsed because more than one provider sold the same
+	// flight; the survivor carries the others as alternative_prices.
+	MergedDuplicates int `json:"merged_duplicates,omitempty"`
+
+	// SortedBy echoes the ordering applied, so a caller can confirm the default it got.
+	SortedBy string `json:"sorted_by,omitempty"`
 }
 
 type ProviderStatus struct {
@@ -44,20 +56,22 @@ type ProviderStatus struct {
 }
 
 type FlightView struct {
-	ID                string                 `json:"id"`
-	Provider          string                 `json:"provider"`
-	Airline           AirlineView            `json:"airline"`
-	FlightNumber      string                 `json:"flight_number"`
-	Departure         EndpointView           `json:"departure"`
-	Arrival           EndpointView           `json:"arrival"`
-	Duration          DurationView           `json:"duration"`
-	Stops             int                    `json:"stops"`
-	Price             PriceView              `json:"price"`
-	AvailableSeats    int                    `json:"available_seats"`
-	CabinClass        string                 `json:"cabin_class"`
-	Aircraft          *string                `json:"aircraft"`
-	Amenities         []string               `json:"amenities"`
-	Baggage           BaggageView            `json:"baggage"`
+	ID             string       `json:"id"`
+	Provider       string       `json:"provider"`
+	Airline        AirlineView  `json:"airline"`
+	FlightNumber   string       `json:"flight_number"`
+	Departure      EndpointView `json:"departure"`
+	Arrival        EndpointView `json:"arrival"`
+	Duration       DurationView `json:"duration"`
+	Stops          int          `json:"stops"`
+	Price          PriceView    `json:"price"`
+	AvailableSeats int          `json:"available_seats"`
+	CabinClass     string       `json:"cabin_class"`
+	Aircraft       *string      `json:"aircraft"`
+	Amenities      []string     `json:"amenities"`
+	Baggage        BaggageView  `json:"baggage"`
+
+	// Additions beyond the required contract.
 	BestValueScore    float64                `json:"best_value_score"`
 	AlternativePrices []AlternativePriceView `json:"alternative_prices,omitempty"`
 	StopAirports      []string               `json:"stop_airports,omitempty"`

@@ -263,7 +263,7 @@ func TestNormalizeFillsDefaults(t *testing.T) {
 	if r.CabinClass != "economy" {
 		t.Errorf("cabin class = %q, want economy", r.CabinClass)
 	}
-	if r.Sort != SortPriceAsc {
-		t.Errorf("sort = %q, want price_asc", r.Sort)
+	if r.Sort != SortBestValue {
+		t.Errorf("sort = %q, want best_value", r.Sort)
 	}
 }
