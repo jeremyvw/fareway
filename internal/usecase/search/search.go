@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +16,17 @@ import (
 type FlightClient interface {
 	Name() string
 	FetchFlights(ctx context.Context, req model.SearchRequest) ([]model.Flight, error)
+}
+
+type Cache interface {
+	Get(key string) (Aggregate, bool)
+	Set(key string, value Aggregate)
+}
+
+type Aggregate struct {
+	Flights  []model.Flight
+	Statuses []model.ProviderStatus
+	Dropped  int
 }
 
 var ErrAllProvidersFailed = errors.New("all providers failed")
@@ -34,13 +47,14 @@ func DefaultConfig() Config {
 type Service struct {
 	clients []FlightClient
 	cfg     Config
+	cache   Cache
 }
 
-func New(cfg Config, clients ...FlightClient) *Service {
+func New(cfg Config, cache Cache, clients ...FlightClient) *Service {
 	if cfg.ProviderTimeout <= 0 || cfg.OverallTimeout <= 0 {
 		cfg = DefaultConfig()
 	}
-	return &Service{clients: clients, cfg: cfg}
+	return &Service{clients: clients, cfg: cfg, cache: cache}
 }
 
 type providerResult struct {
@@ -62,8 +76,11 @@ func (s *Service) Search(ctx context.Context, req model.SearchRequest) (model.Se
 	}
 
 	started := time.Now()
-	results := s.fanOut(ctx, req)
-	elapsed := time.Since(started)
+
+	aggregate, cacheHit, err := s.aggregate(ctx, req)
+	if err != nil {
+		return model.SearchResponse{}, err
+	}
 
 	response := model.SearchResponse{
 		SearchCriteria: model.Criteria{
@@ -75,37 +92,20 @@ func (s *Service) Search(ctx context.Context, req model.SearchRequest) (model.Se
 		},
 		Metadata: model.Metadata{
 			ProvidersQueried: len(s.clients),
-			SearchTimeMS:     elapsed.Milliseconds(),
-			CacheHit:         false,
+			CacheHit:         cacheHit,
+			ProviderStatus:   aggregate.Statuses,
 		},
 	}
-
-	var (
-		flights []model.Flight
-		dropped int
-	)
-	for _, r := range results {
-		status := model.ProviderStatus{
-			Provider:   r.provider,
-			OK:         r.err == nil,
-			DurationMS: r.duration.Milliseconds(),
-		}
-		if r.err != nil {
-			status.Error = r.err.Error()
-			response.Metadata.ProvidersFailed++
-		} else {
+	for _, status := range aggregate.Statuses {
+		if status.OK {
 			response.Metadata.ProvidersSucceded++
-			kept, skipped := s.accept(req, r.flights)
-			status.Results = len(kept)
-			dropped += skipped
-			flights = append(flights, kept...)
+		} else {
+			response.Metadata.ProvidersFailed++
 		}
-		response.Metadata.ProviderStatus = append(response.Metadata.ProviderStatus, status)
 	}
 
-	if response.Metadata.ProvidersSucceded == 0 && len(s.clients) > 0 {
-		return model.SearchResponse{}, ErrAllProvidersFailed
-	}
+	flights := aggregate.Flights
+	dropped := aggregate.Dropped
 
 	flights, filtered := applyFilters(flights, activeFilters)
 
@@ -123,11 +123,65 @@ func (s *Service) Search(ctx context.Context, req model.SearchRequest) (model.Se
 	response.Metadata.FilteredResults = filtered
 	response.Metadata.MergedDuplicates = merged
 	response.Metadata.SortedBy = string(req.Sort)
+	response.Metadata.SearchTimeMS = time.Since(started).Milliseconds()
 	response.Flights = make([]model.FlightView, 0, len(flights))
 	for _, f := range flights {
 		response.Flights = append(response.Flights, model.NewFlightView(f))
 	}
 	return response, nil
+}
+
+func (s *Service) aggregate(ctx context.Context, req model.SearchRequest) (Aggregate, bool, error) {
+	key := cacheKey(req)
+
+	if s.cache != nil {
+		if cached, ok := s.cache.Get(key); ok {
+			return cached, true, nil
+		}
+	}
+
+	results := s.fanOut(ctx, req)
+
+	var (
+		aggregate Aggregate
+		succeeded int
+	)
+	for _, r := range results {
+		status := model.ProviderStatus{
+			Provider:   r.provider,
+			OK:         r.err == nil,
+			DurationMS: r.duration.Milliseconds(),
+		}
+		if r.err != nil {
+			status.Error = r.err.Error()
+		} else {
+			succeeded++
+			kept, skipped := s.accept(req, r.flights)
+			status.Results = len(kept)
+			aggregate.Dropped += skipped
+			aggregate.Flights = append(aggregate.Flights, kept...)
+		}
+		aggregate.Statuses = append(aggregate.Statuses, status)
+	}
+
+	if succeeded == 0 && len(s.clients) > 0 {
+		return Aggregate{}, false, ErrAllProvidersFailed
+	}
+
+	if s.cache != nil {
+		s.cache.Set(key, aggregate)
+	}
+	return aggregate, false, nil
+}
+
+func cacheKey(req model.SearchRequest) string {
+	return strings.Join([]string{
+		req.Origin,
+		req.Destination,
+		req.DepartureDate,
+		req.CabinClass,
+		strconv.Itoa(req.Passengers),
+	}, "|")
 }
 
 func (s *Service) fanOut(ctx context.Context, req model.SearchRequest) []providerResult {

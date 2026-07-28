@@ -27,7 +27,7 @@ func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	providers := buildProviders()
-	service := buildSearchUsecase(providers)
+	service := buildSearchUsecase(providers, buildSearchCache())
 	searchHandler := buildSearchHandler(service, log)
 
 	addr := defaultAddr

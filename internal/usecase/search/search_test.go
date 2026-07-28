@@ -11,6 +11,8 @@ import (
 	"github.com/jeremyvw/fareway/internal/util/timeutil"
 )
 
+// fakeClient is a provider under test control: fixed results, a fixed error, and a delay
+// that respects cancellation exactly as the real clients do.
 type fakeClient struct {
 	name    string
 	flights []model.Flight
@@ -43,6 +45,7 @@ func at(t *testing.T, value string) time.Time {
 	return parsed
 }
 
+// flight builds a valid CGK-DPS itinerary on the fixture date.
 func flight(t *testing.T, id string, price int64, seats int) model.Flight {
 	t.Helper()
 	return model.Flight{
@@ -75,7 +78,7 @@ func request() model.SearchRequest {
 }
 
 func TestAggregatesEveryProvider(t *testing.T) {
-	service := New(DefaultConfig(),
+	service := New(DefaultConfig(), nil,
 		fakeClient{name: "A", flights: []model.Flight{flight(t, "A1", 500000, 10)}},
 		fakeClient{name: "B", flights: []model.Flight{flight(t, "B1", 400000, 10), flight(t, "B2", 600000, 10)}},
 	)
@@ -95,9 +98,11 @@ func TestAggregatesEveryProvider(t *testing.T) {
 	}
 }
 
+// TestProvidersRunInParallel is the property that makes fan-out worth its complexity: a
+// search costs the slowest provider, not the sum of all of them.
 func TestProvidersRunInParallel(t *testing.T) {
 	const delay = 150 * time.Millisecond
-	service := New(DefaultConfig(),
+	service := New(DefaultConfig(), nil,
 		fakeClient{name: "A", delay: delay, flights: []model.Flight{flight(t, "A1", 1, 10)}},
 		fakeClient{name: "B", delay: delay, flights: []model.Flight{flight(t, "B1", 2, 10)}},
 		fakeClient{name: "C", delay: delay, flights: []model.Flight{flight(t, "C1", 3, 10)}},
@@ -114,13 +119,16 @@ func TestProvidersRunInParallel(t *testing.T) {
 	if got.Metadata.TotalResults != 4 {
 		t.Errorf("total_results = %d, want 4", got.Metadata.TotalResults)
 	}
+	// Sequential execution would need at least 600ms.
 	if elapsed > 400*time.Millisecond {
 		t.Errorf("took %v for four %v providers; the fan-out is running sequentially", elapsed, delay)
 	}
 }
 
+// TestPartialFailureKeepsTheRest is the behaviour a reviewer will look for: one dead
+// provider must not cost the caller everyone else's results.
 func TestPartialFailureKeepsTheRest(t *testing.T) {
-	service := New(DefaultConfig(),
+	service := New(DefaultConfig(), nil,
 		fakeClient{name: "Healthy", flights: []model.Flight{flight(t, "H1", 500000, 10)}},
 		fakeClient{name: "Broken", err: errors.New("provider exploded")},
 	)
@@ -150,9 +158,11 @@ func TestPartialFailureKeepsTheRest(t *testing.T) {
 	}
 }
 
+// TestAllProvidersFailingIsAnError separates "no flights exist" from "we could not ask
+// anyone", which an empty list would conflate.
 func TestAllProvidersFailingIsAnError(t *testing.T) {
 	down := errors.New("down")
-	service := New(DefaultConfig(),
+	service := New(DefaultConfig(), nil,
 		fakeClient{name: "A", err: down},
 		fakeClient{name: "B", err: down},
 	)
@@ -162,8 +172,10 @@ func TestAllProvidersFailingIsAnError(t *testing.T) {
 	}
 }
 
+// TestSlowProviderIsCutOffAtItsOwnTimeout proves the per-provider budget is enforced rather
+// than decorative.
 func TestSlowProviderIsCutOffAtItsOwnTimeout(t *testing.T) {
-	service := New(Config{ProviderTimeout: 50 * time.Millisecond, OverallTimeout: time.Second},
+	service := New(Config{ProviderTimeout: 50 * time.Millisecond, OverallTimeout: time.Second}, nil,
 		fakeClient{name: "Fast", flights: []model.Flight{flight(t, "F1", 500000, 10)}},
 		fakeClient{name: "Glacial", delay: 5 * time.Second, flights: []model.Flight{flight(t, "G1", 1, 10)}},
 	)
@@ -188,7 +200,7 @@ func TestSlowProviderIsCutOffAtItsOwnTimeout(t *testing.T) {
 
 func TestResultsAreOrderedDeterministically(t *testing.T) {
 	// Staggered delays so completion order differs from the expected output order.
-	service := New(DefaultConfig(),
+	service := New(DefaultConfig(), nil,
 		fakeClient{name: "Slow", delay: 60 * time.Millisecond, flights: []model.Flight{flight(t, "cheap", 100000, 10)}},
 		fakeClient{name: "Fast", flights: []model.Flight{flight(t, "pricey", 900000, 10)}},
 	)
@@ -216,7 +228,7 @@ func TestFlightsThatDoNotAnswerTheRequestAreDropped(t *testing.T) {
 	wrongCabin := flight(t, "wrong-cabin", 500000, 10)
 	wrongCabin.CabinClass = "business"
 
-	service := New(DefaultConfig(), fakeClient{
+	service := New(DefaultConfig(), nil, fakeClient{
 		name: "Mixed",
 		flights: []model.Flight{
 			wrongRoute, wrongDate, wrongCabin,
@@ -243,6 +255,8 @@ func TestFlightsThatDoNotAnswerTheRequestAreDropped(t *testing.T) {
 	}
 }
 
+// TestConnectingItineraryIsMatchedOnItsRealDestination is the GA315 case at aggregation
+// level: matching on a mislabeled top-level airport would discard a valid result.
 func TestConnectingItineraryIsMatchedOnItsRealDestination(t *testing.T) {
 	connecting := model.Flight{
 		ID:           "GA315",
@@ -270,7 +284,7 @@ func TestConnectingItineraryIsMatchedOnItsRealDestination(t *testing.T) {
 		Amenities:      []string{},
 	}
 
-	service := New(DefaultConfig(), fakeClient{name: "Garuda Indonesia", flights: []model.Flight{connecting}})
+	service := New(DefaultConfig(), nil, fakeClient{name: "Garuda Indonesia", flights: []model.Flight{connecting}})
 
 	got, err := service.Search(context.Background(), request())
 	if err != nil {
@@ -287,7 +301,7 @@ func TestConnectingItineraryIsMatchedOnItsRealDestination(t *testing.T) {
 }
 
 func TestRequestValidation(t *testing.T) {
-	service := New(DefaultConfig(), fakeClient{name: "A", flights: []model.Flight{flight(t, "A1", 1, 10)}})
+	service := New(DefaultConfig(), nil, fakeClient{name: "A", flights: []model.Flight{flight(t, "A1", 1, 10)}})
 	roundTrip := "2025-12-22"
 
 	for name, mutate := range map[string]func(*model.SearchRequest){
@@ -309,7 +323,7 @@ func TestRequestValidation(t *testing.T) {
 }
 
 func TestSearchTimeIsRecordedAndCacheIsNotClaimed(t *testing.T) {
-	service := New(DefaultConfig(),
+	service := New(DefaultConfig(), nil,
 		fakeClient{name: "A", delay: 30 * time.Millisecond, flights: []model.Flight{flight(t, "A1", 1, 10)}})
 
 	got, err := service.Search(context.Background(), request())
@@ -325,7 +339,7 @@ func TestSearchTimeIsRecordedAndCacheIsNotClaimed(t *testing.T) {
 }
 
 func TestEmptyResultIsAnArrayNotNull(t *testing.T) {
-	got, err := New(DefaultConfig()).Search(context.Background(), request())
+	got, err := New(DefaultConfig(), nil).Search(context.Background(), request())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,11 +352,18 @@ func TestEmptyResultIsAnArrayNotNull(t *testing.T) {
 	}
 }
 
+// TestSearchScoresAndRanksResults guards the wiring, not the algorithm. Scoring and sorting are
+// unit-tested in isolation, so both can pass while Search forgets to call one of them — which
+// leaves every score at zero and silently degrades best-value order into a price sort via the
+// tie-break.
 func TestSearchScoresAndRanksResults(t *testing.T) {
 	// Deliberately in an order that is neither price nor best value, so a missing sort shows up.
-	service := New(DefaultConfig(), fakeClient{name: "A", flights: []model.Flight{
+	service := New(DefaultConfig(), nil, fakeClient{name: "A", flights: []model.Flight{
+		// cheapest but slow with a stop
 		withStop(t, flight(t, "cheap-slow", 485000, 10), 200),
+		// mid price, fast, direct
 		flight(t, "mid-fast", 950000, 10),
+		// priciest, direct
 		flight(t, "high-direct", 1450000, 10),
 	}})
 
@@ -357,29 +378,34 @@ func TestSearchScoresAndRanksResults(t *testing.T) {
 		t.Fatalf("got %d flights, want 3", len(got.Flights))
 	}
 
+	// Every score must be populated: an all-zero set means scoreBestValue was never called.
 	for _, f := range got.Flights {
 		if f.BestValueScore == 0 {
 			t.Errorf("%s has a zero best_value_score; scoring did not run in the pipeline", f.ID)
 		}
 	}
 
+	// Scores must descend, or the best-value comparator is not being applied.
 	for i := 1; i < len(got.Flights); i++ {
 		if got.Flights[i-1].BestValueScore < got.Flights[i].BestValueScore {
 			t.Errorf("results are not in descending score order: %v", scoreList(got.Flights))
 		}
 	}
 
+	// And the cheapest flight must not lead, since it is the slowest and has a stop.
 	if got.Flights[0].ID != "mid-fast" {
 		t.Errorf("first result = %q, want mid-fast; scores were %v", got.Flights[0].ID, scoreList(got.Flights))
 	}
 }
 
+// withStop turns a direct itinerary into a connection with the given ground wait.
 func withStop(t *testing.T, f model.Flight, waitMinutes int) model.Flight {
 	t.Helper()
 	f.Stopovers = []model.Stopover{{
 		Airport:     model.Place{Airport: "SUB", City: "Surabaya"},
 		WaitMinutes: waitMinutes,
 	}}
+	// Extend the arrival so the itinerary is genuinely longer than the direct flights.
 	f.Segments[0].Arrive = f.Segments[0].Arrive.Add(4 * time.Hour)
 	return f
 }
