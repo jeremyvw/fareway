@@ -1,5 +1,3 @@
-// Package model is the normalized vocabulary every other layer speaks. It imports
-// nothing from this project, so no provider quirk can leak inward.
 package model
 
 import (
