@@ -1,17 +1,41 @@
 # fareway
 
 A flight search and aggregation service. It queries four airline provider APIs in parallel,
-normalizes four very different response formats into one, and returns filtered, compared and
-ranked results.
+normalizes four very different response formats into one, and returns filtered, compared,
+ranked and cached results.
 
 Written in Go with **no third-party dependencies** — standard library only.
 
 ---
 
+## What is implemented
+
+| Requirement | Where |
+| --- | --- |
+| Aggregate flight data from multiple sources | `usecase/search/search.go` — parallel fan-out over four providers |
+| Normalize into a common format | `repo/external_client/*` — one adapter per provider |
+| Handle different response structures | Four DTO shapes, four timestamp formats, three baggage formats |
+| Search by origin, destination, date | `usecase/search/search.go` — matched on the *effective* route |
+| Filter by price, stops, times, airlines, duration | `usecase/search/filter.go` |
+| Sort by price, duration, departure, arrival | `usecase/search/sort.go` |
+| Compare prices across providers | `usecase/search/compare.go` |
+| Total trip duration including layovers | `model/model.go` — derived, gate-to-gate |
+| Rank by "best value" | `usecase/search/ranking.go` |
+| Handle data inconsistencies | Computed durations override declared ones; conflicts reported as warnings |
+| Timezones (WIB / WITA / WIT) | `util/timeutil` + `util/airport`, IANA database embedded |
+| Missing optional fields | `null` aircraft, `[]` amenities, derived airline codes and city names |
+| Validation (arrival after departure, legs connect) | `model/validate.go` |
+| Caching | `util/cache` + `usecase/search` — `cache_hit` in the output contract |
+| Retry with exponential backoff | `util/retry`, wired into the flaky provider |
+| Parallel queries with timeout handling | `usecase/search/search.go` |
+| IDR formatting with thousands separators | `util/currency` |
+
+---
+
 ## Setup
 
-Requires Go 1.25 or newer (`go.mod` targets 1.26.5; with `GOTOOLCHAIN=auto`, which is the
-default, the correct toolchain is fetched automatically).
+Requires Go 1.21 or newer. `go.mod` declares toolchain `1.26.5`, and with `GOTOOLCHAIN=auto` —
+the default — the correct toolchain is fetched automatically if your local Go is older.
 
 ```bash
 git clone https://github.com/jeremyvw/fareway.git
@@ -63,12 +87,12 @@ Response:
     "providers_queried": 4,
     "providers_succeeded": 4,
     "providers_failed": 0,
-    "search_time_ms": 208,
+    "search_time_ms": 384,
     "cache_hit": false,
     "provider_status": [
       { "provider": "Garuda Indonesia", "ok": true, "results": 3, "duration_ms": 84 },
       { "provider": "Lion Air",         "ok": true, "results": 3, "duration_ms": 195 },
-      { "provider": "Batik Air",        "ok": true, "results": 3, "duration_ms": 208 },
+      { "provider": "Batik Air",        "ok": true, "results": 3, "duration_ms": 384 },
       { "provider": "AirAsia",          "ok": true, "results": 4, "duration_ms": 138 }
     ],
     "sorted_by": "best_value"
@@ -142,6 +166,9 @@ curl -s localhost:8080/health
 # {"status":"ok"}
 ```
 
+Returns 200 unconditionally. The providers are in-process, so there is no upstream connection to
+probe; against real HTTP providers this would split into liveness and readiness.
+
 ### Status codes
 
 | Code | When |
@@ -169,19 +196,23 @@ internal/
   handler/search/               HTTP: decode, delegate, encode, map errors to status
 
   usecase/search/               orchestration
-    search.go                   FlightClient port, parallel fan-out, timeouts, validation
+    search.go                   FlightClient and Cache ports, fan-out, timeouts, validation
     filter.go                   price / stops / time window / airline / duration
+    sort.go                     the seven orderings, with deterministic tie-breaking
     compare.go                  cross-provider price comparison
     ranking.go                  best-value scoring
 
   repo/external_client/         one package per provider, each owning its own fixture
     garuda/  lionair/  batikair/  airasia/
 
-  util/                         leaf packages: timeutil, airport, currency, normalize, retry
+  util/                         leaf packages
+    timeutil/  airport/  currency/  normalize/  retry/  cache/
 ```
 
 Dependencies point inward. `model` imports nothing of ours; `util` packages are leaves; no
-provider package imports the usecase.
+provider package imports the usecase. Both the `FlightClient` and `Cache` interfaces are declared
+in the usecase — the consumer — so implementations satisfy them structurally without importing
+it.
 
 ---
 
@@ -237,6 +268,10 @@ producing a plausible but wrong instant. The IANA database is embedded via `time
 Air's naive timestamps depend on `LoadLocation`, and the zoneinfo files it would otherwise read
 are absent from a slim container image.
 
+`util/airport` maps each IATA code to its IANA zone — `Asia/Jakarta`, `Asia/Makassar`,
+`Asia/Jayapura` — and reports the Indonesian label (WIB, WITA, WIT). Anything outside those three
+returns an empty label rather than a guess.
+
 ### Normalization lives in the provider packages
 
 Each client owns the shape of its own external data, so no provider-specific field reaches the
@@ -245,12 +280,12 @@ usecase. That is also where the divergences get resolved:
 - **Baggage** arrives three ways — Garuda piece counts, Lion Air weights, Batik Air and AirAsia
   as prose. Per-provider mapping to strings, not one shared parser.
 - **Cabin class** is `Y` from Batik Air, `ECONOMY` from Lion Air, `economy` elsewhere. Booking
-  class letters map to cabin names, with unknown letters passed through rather than assumed to
-  be economy — a wrong cabin would silently mismatch the caller's request.
+  class letters map to cabin names, with unknown letters passed through rather than assumed to be
+  economy — a wrong cabin would silently mismatch the caller's request.
 - **Airline code** is absent from AirAsia, so it is derived from the flight number (`QZ7250` →
   `QZ`).
-- **City names** are absent from AirAsia and Batik Air, and from Garuda's segments. A static
-  IATA lookup fills the gap; unknown codes are reported, never guessed.
+- **City names** are absent from AirAsia and Batik Air, and from Garuda's segments. A static IATA
+  lookup fills the gap; unknown codes are reported, never guessed.
 - **Price** uses Batik Air's `totalPrice`, not `basePrice` — the latter excludes tax and would
   win every comparison unfairly.
 - **Absent values** map to `null` for aircraft and `[]` for amenities, so absence is
@@ -268,9 +303,9 @@ Providers are queried concurrently, each with its own deadline derived from an o
 search costs the slowest provider (~200–400ms), not the sum (~625ms).
 
 The timeout is only enforceable because each client selects on `ctx.Done()` rather than sleeping
-blindly — a bare `time.Sleep` would let a goroutine run to completion regardless, and
-`wg.Wait()` would wait for it, making the budget decorative. There is a test asserting *elapsed
-time*, not just that an error was returned.
+blindly — a bare `time.Sleep` would let a goroutine run to completion regardless, and `wg.Wait()`
+would wait for it, making the budget decorative. There is a test asserting *elapsed time*, not
+just that an error was returned.
 
 Each goroutine writes its own slot in a pre-sized slice, so results stay in provider order
 without a mutex.
@@ -281,18 +316,51 @@ AirAsia simulates a 10% failure rate, wrapped in retry with exponential backoff.
 fails, times out or returns garbage costs only its own results: it is counted in
 `providers_failed`, named in `provider_status` with its error, and the search proceeds.
 
-Only a total wipeout is an error, because that is the single case where an empty list would lie
-to the caller — there may well be flights, we just could not reach anyone who knows. That maps
-to `502`, not `500`: nothing is wrong with this service when every upstream is unreachable.
+Only a total wipeout is an error, because that is the single case where an empty list would lie to
+the caller — there may well be flights, we just could not reach anyone who knows. That maps to
+`502`, not `500`: nothing is wrong with this service when every upstream is unreachable.
 
 The retry lives inside the AirAsia client rather than in the aggregator, because the flakiness is
 specific to that provider and the other three should not pay for a retry loop they do not need.
 The `retry` package itself is generic, so that can change without rewriting it.
 
+### Caching the aggregate, not the response
+
+A 30-second in-memory TTL cache stores the **normalized provider results**, keyed on origin,
+destination, date, cabin class and passenger count — the fields that change what providers
+return. Filters and sort are applied *after* the lookup and are deliberately not part of the key.
+
+That distinction is the whole point. Two callers searching the same route with different filters
+share one entry:
+
+```
+1st  cache_hit=false  384ms  13 results
+2nd  cache_hit=true     0ms  13 results
+3rd  cache_hit=true     0ms   9 results   (max_stops=0, sort=price_desc — still a hit)
+4th  cache_hit=false  346ms   0 results   (different date — a genuine miss)
+```
+
+Caching finished responses instead would fragment the cache across every filter and sort
+combination and would almost never hit.
+
+A **total** provider outage is not cached: storing it would extend the outage past its own cause,
+telling the next caller everything is down without anyone having checked. A **partial** failure
+*is* cached, because three good providers out of four is a usable result and re-querying to
+re-learn it wastes four calls. On a cache hit, `provider_status.duration_ms` describes the fetch
+that produced the cached data, not the current request.
+
+Expiry is lazy on read rather than swept by a background goroutine — with a bounded key space
+there is nothing to reclaim urgently, and no goroutine means nothing to shut down.
+
+The store is in-memory rather than Redis because these providers are in-process mocks with no
+network cost to amortize, and a second process would be an operational dependency a reviewer has
+to install for no behavioural gain. The `Cache` port is declared in the usecase, so a distributed
+store would be a wiring change in `cmd` only.
+
 ### Pipeline order
 
 ```
-fan-out → accept → filter → dedupe → score → sort
+fan-out (or cache) → accept → filter → dedupe → score → sort
 ```
 
 - **accept** drops records that are unusable or do not answer the request (route, date, cabin,
@@ -341,21 +409,21 @@ Because duration is gate-to-gate, a cheap itinerary with a long layover is penal
 wait, not merely for having a stop.
 
 What this buys, on the real data: `QZ7250` is the cheapest flight in the set at Rp485.000 and
-ranks **tenth**, because it is also 2h40m slower than a direct with a 95-minute wait. A pure
-price sort would put it first and mislead most travellers.
+ranks **tenth**, because it is also 2h40m slower than a direct with a 95-minute wait. A pure price
+sort would put it first and mislead most travellers.
 
 **Scores are relative to one response, not absolute.** Filter to direct flights only and the top
 score rises from 96 to 100, because the comparison set changed. This is deliberate — an absolute
-scale would need per-route tuning to mean anything — but it means two responses' scores should
-not be compared.
+scale would need per-route tuning to mean anything — but it means two responses' scores should not
+be compared.
 
 ### Standard library only
 
 No router, no logging framework, no assertion library. `http.ServeMux` has supported
 method-aware patterns since Go 1.22, so `"POST /api/v1/flights/search"` handles routing and
 returns `405` for a wrong method for free. `log/slog` covers structured logging. This keeps the
-dependency surface at zero, which for a service whose job is calling other services is worth
-more than the convenience.
+dependency surface at zero, which for a service whose job is calling other services is worth more
+than the convenience.
 
 ### Requests reject unknown fields
 
@@ -373,14 +441,16 @@ make cover    # HTML coverage report
 
 | Package | Coverage |
 | --- | --- |
-| `usecase/search` | 97.7% |
+| `util/cache` | 100% |
+| `util/currency` | 100% |
+| `usecase/search` | 97.9% |
 | `handler/search` | 95.7% |
 | `util/timeutil` | 95.3% |
 | `util/retry` | 91.4% |
 | `util/airport` | 83.3% |
 | `model` | 82.1% |
 | `repo/external_client/*` | 70–78% |
-| `util/currency` | 100% |
+| `util/normalize` | 0% — exercised indirectly through all four adapters |
 | `cmd` | 0% — wiring only |
 
 Everything runs under `-race`, since the fan-out is concurrent.
@@ -392,18 +462,22 @@ Notable cases, chosen because each one guards a mistake that would otherwise be 
 - **Lion Air's timestamps** are asserted as absolute instants, and a companion assertion proves
   that parsing them without their timezone yields a *different* instant. That is the actual bug,
   not a proxy for it.
-- **Batik Air's colon-less offset** is asserted to be *rejected* by the RFC3339 parser, so the
-  two layouts cannot later be "simplified" into one.
+- **Batik Air's colon-less offset** is asserted to be *rejected* by the RFC3339 parser, so the two
+  layouts cannot later be "simplified" into one.
 - **Provider latency** is asserted by elapsed time, so a timeout that does not actually cut a
   provider short fails the test.
 - **Fan-out parallelism** — four 150ms providers must complete inside 400ms.
-- **Deterministic ordering** — the same search runs five times with staggered provider delays
-  and must return an identical order.
+- **Cache hits** are asserted by counting provider invocations, not by reading `cache_hit`.
+  Checking the flag alone would pass even if it were hardcoded.
+- **A total outage is not cached** — the provider fails, nothing is stored, then it recovers and
+  the next search must actually retry it.
+- **Deterministic ordering** — the same search runs five times with staggered provider delays and
+  must return an identical order.
 - **Pipeline wiring** — scoring and sorting are unit-tested in isolation, so both can pass while
-  the usecase forgets to call one of them. That happened during development: with every score
-  left at zero, best-value ordering fell through to the price tie-break and produced a
-  correct-looking list with the wrong label on it. There is now an assertion that goes through
-  the real entry point.
+  the usecase forgets to call one of them. That happened during development: with every score left
+  at zero, best-value ordering fell through to the price tie-break and produced a correct-looking
+  list with the wrong label on it. There is now an assertion that goes through the real entry
+  point.
 
 Provider latency and failure rates are injectable, with a seeded random source, so the
 10%-failure path is deterministic in tests instead of flaky. Forcing AirAsia's failure rate to 1
