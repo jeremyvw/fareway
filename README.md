@@ -443,14 +443,14 @@ make cover    # HTML coverage report
 | --- | --- |
 | `util/cache` | 100% |
 | `util/currency` | 100% |
+| `util/normalize` | 100% |
 | `usecase/search` | 97.9% |
 | `handler/search` | 95.7% |
 | `util/timeutil` | 95.3% |
 | `util/retry` | 91.4% |
 | `util/airport` | 83.3% |
 | `model` | 82.1% |
-| `repo/external_client/*` | 70–78% |
-| `util/normalize` | 0% — exercised indirectly through all four adapters |
+| `repo/external_client/*` | 73–80% |
 | `cmd` | 0% — wiring only |
 
 Everything runs under `-race`, since the fan-out is concurrent.
@@ -473,6 +473,9 @@ Notable cases, chosen because each one guards a mistake that would otherwise be 
   the next search must actually retry it.
 - **Deterministic ordering** — the same search runs five times with staggered provider delays and
   must return an identical order.
+- **Output contract details** — `null` for an absent aircraft rather than `""`, `[]` for absent
+  amenities rather than `null`, and the derived-carrier-code fallback including the case it
+  cannot handle (a carrier whose IATA code begins with a digit).
 - **Pipeline wiring** — scoring and sorting are unit-tested in isolation, so both can pass while
   the usecase forgets to call one of them. That happened during development: with every score left
   at zero, best-value ordering fell through to the price tie-break and produced a correct-looking
@@ -482,3 +485,14 @@ Notable cases, chosen because each one guards a mistake that would otherwise be 
 Provider latency and failure rates are injectable, with a seeded random source, so the
 10%-failure path is deterministic in tests instead of flaky. Forcing AirAsia's failure rate to 1
 gives a `200` with nine results and `providers_failed: 1`.
+
+---
+
+## Not implemented
+
+- **Round-trip search** — `returnDate` is accepted and explicitly rejected with a clear message
+  rather than silently ignored. The fixtures contain one route on one date with no return
+  inventory, so implementing it would mean fabricating provider data.
+- **Multi-city search** — the same constraint, twice over.
+- **Provider rate limiting** — the providers are in-process function calls; throttling them would
+  demonstrate nothing about handling a real upstream quota.
