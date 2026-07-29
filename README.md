@@ -1,8 +1,8 @@
 # fareway
 
 A flight search and aggregation service. It queries four airline provider APIs in parallel,
-normalizes four very different response formats into one, and returns filtered, compared,
-ranked and cached results.
+normalizes four very different response formats into one, and returns filtered, compared, ranked
+and cached results. One-way, round-trip and multi-city searches all run through the same path.
 
 Written in Go with **no third-party dependencies** — standard library only.
 
@@ -30,6 +30,8 @@ Written in Go with **no third-party dependencies** — standard library only.
 | Parallel queries with timeout handling | `usecase/search/search.go` |
 | IDR formatting with thousands separators | `util/currency` |
 | Rate limiting for provider APIs | `util/ratelimit` + `usecase/search/throttle.go` |
+| Round-trip search | `model/request.go` + `usecase/search/legs.go` |
+| Multi-city search | the same path — a trip is a list of legs |
 
 ---
 
@@ -130,6 +132,76 @@ Response:
 }
 ```
 
+### Trip types
+
+A trip is a list of legs. One-way is one leg, round-trip is two, multi-city is more — all three
+run through the same code path.
+
+Two request shapes are accepted. The flat form is the one the assignment specifies, and
+`returnDate` makes it a round trip:
+
+```bash
+curl -s -X POST localhost:8080/api/v1/flights/search \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "origin": "CGK", "destination": "DPS",
+    "departureDate": "2025-12-15", "returnDate": "2025-12-22",
+    "passengers": 1, "cabinClass": "economy"
+  }' | jq
+```
+
+The general form expresses any itinerary, up to six legs:
+
+```bash
+curl -s -X POST localhost:8080/api/v1/flights/search \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "legs": [
+      { "origin": "CGK", "destination": "DPS", "departureDate": "2025-12-15" },
+      { "origin": "DPS", "destination": "SUB", "departureDate": "2025-12-20" },
+      { "origin": "SUB", "destination": "CGK", "departureDate": "2025-12-24" }
+    ],
+    "passengers": 1, "cabinClass": "economy"
+  }' | jq
+```
+
+Mixing the two shapes in one request is a `400`. `trip_type` is derived from the legs and echoed
+back in `search_criteria`, never taken from the request.
+
+A **one-way** search keeps the flat response shape above: flights at the top level, no `legs` key.
+
+A **multi-leg** search returns each leg separately, because an outbound and an inbound are not
+alternatives to each other — you buy both — so ranking them in one list would compare things that
+are not comparable. Top-level `metadata` summarizes the trip; each leg carries its own criteria,
+metadata and ranked flights:
+
+```json
+{
+  "search_criteria": { "origin": "CGK", "destination": "DPS", "trip_type": "round_trip", "...": "..." },
+  "metadata": { "total_results": 13, "search_time_ms": 287, "cache_hit": false, "...": "..." },
+  "flights": [],
+  "legs": [
+    {
+      "leg": 1,
+      "search_criteria": { "origin": "CGK", "destination": "DPS", "departure_date": "2025-12-15" },
+      "metadata": { "total_results": 13, "cache_hit": false },
+      "flights": [ "..." ]
+    },
+    {
+      "leg": 2,
+      "search_criteria": { "origin": "DPS", "destination": "CGK", "departure_date": "2025-12-22" },
+      "metadata": { "total_results": 0, "dropped_results": 13, "cache_hit": false },
+      "flights": []
+    }
+  ]
+}
+```
+
+Legs are searched concurrently, so a round trip costs about the same wall clock as a one-way:
+287ms for two legs and 298ms for three, against ~290ms for one.
+
+Best-value scores are computed within a leg, since that is the set a traveller is choosing from.
+
 ### Filters
 
 All optional and combined with AND. Time bounds are `HH:MM` in each endpoint's **local**
@@ -198,6 +270,7 @@ internal/
 
   usecase/search/               orchestration
     search.go                   FlightClient, Cache and Limiter ports, fan-out, timeouts
+    legs.go                     running a trip's legs concurrently
     throttle.go                 rate-limiting decorator over a provider
     filter.go                   price / stops / time window / airline / duration
     sort.go                     the seven orderings, with deterministic tie-breaking
@@ -326,10 +399,31 @@ The retry lives inside the AirAsia client rather than in the aggregator, because
 specific to that provider and the other three should not pay for a retry loop they do not need.
 The `retry` package itself is generic, so that can change without rewriting it.
 
+### Every search is a list of legs
+
+Round-trip and multi-city are not separate features here. A search carries `[]Leg`, and one-way,
+return and multi-city differ only in how many entries it has — so there is one orchestration path
+rather than three, and one set of tests over it.
+
+`Normalize` converts the assignment's flat request shape into legs, turning a `returnDate` into a
+second leg travelling back the way the first came. Everything below that point sees legs only and
+never learns which shape the caller used. Accepting both is deliberate: the flat form is the
+contract the assignment specifies and has to keep working untouched, while the legs array is what
+makes anything beyond a return trip expressible.
+
+`trip_type` is derived rather than accepted. Two legs count as a round trip only when the second
+retraces the first; two legs going somewhere else are multi-city. Deriving it means a request
+cannot claim to be a round trip while carrying three legs, so there is no contradiction to
+adjudicate.
+
+Legs are independent — nothing about the return depends on which outbound was found — so they run
+concurrently, and a failing leg costs only its own results. The same partial-failure rule already
+applied to providers: only a search where every leg came back empty-handed is an error.
+
 ### Caching the aggregate, not the response
 
-A 30-second in-memory TTL cache stores the **normalized provider results**, keyed on origin,
-destination, date, cabin class and passenger count — the fields that change what providers
+A 30-second in-memory TTL cache stores the **normalized provider results**, keyed per leg on
+origin, destination, date, cabin class and passenger count — the fields that change what providers
 return. Filters and sort are applied *after* the lookup and are deliberately not part of the key.
 
 That distinction is the whole point. Two callers searching the same route with different filters
@@ -350,6 +444,10 @@ telling the next caller everything is down without anyone having checked. A **pa
 *is* cached, because three good providers out of four is a usable result and re-querying to
 re-learn it wastes four calls. On a cache hit, `provider_status.duration_ms` describes the fetch
 that produced the cached data, not the current request.
+
+Keying per leg rather than per request means a round trip reuses an outbound someone has already
+searched and pays only for the return, and two multi-city itineraries share any leg they have in
+common. A hit does not extend an entry's deadline, so each leg ages out on its own schedule.
 
 Expiry is lazy on read rather than swept by a background goroutine — with a bounded key space
 there is nothing to reclaim urgently, and no goroutine means nothing to shut down.
@@ -479,12 +577,12 @@ make cover    # HTML coverage report
 | `util/currency` | 100% |
 | `util/normalize` | 100% |
 | `util/ratelimit` | 100% |
-| `usecase/search` | 97.9% |
+| `usecase/search` | 96.8% |
 | `handler/search` | 95.7% |
 | `util/timeutil` | 95.3% |
 | `util/retry` | 91.4% |
 | `util/airport` | 83.3% |
-| `model` | 82.1% |
+| `model` | 85.6% |
 | `repo/external_client/*` | 73–80% |
 | `cmd` | 0% — wiring only |
 
@@ -509,6 +607,10 @@ Notable cases, chosen because each one guards a mistake that would otherwise be 
   the others still return.
 - **A total outage is not cached** — the provider fails, nothing is stored, then it recovers and
   the next search must actually retry it.
+- **Multi-leg orchestration** is tested against a provider that has inventory in both directions,
+  since the supplied fixtures cannot exercise a return leg. Covers concurrency by elapsed time,
+  per-leg caching by counting provider calls, per-leg filtering, and a one-way response keeping
+  the flat shape.
 - **Deterministic ordering** — the same search runs five times with staggered provider delays and
   must return an identical order.
 - **Output contract details** — `null` for an absent aircraft rather than `""`, `[]` for absent
@@ -526,9 +628,19 @@ gives a `200` with nine results and `providers_failed: 1`.
 
 ---
 
-## Not implemented
+## Known limitations
 
-- **Round-trip search** — `returnDate` is accepted and explicitly rejected with a clear message
-  rather than silently ignored. The fixtures contain one route on one date with no return
-  inventory, so implementing it would mean fabricating provider data.
-- **Multi-city search** — the same constraint, twice over.
+- **The mock data covers one route on one date.** All four fixtures hold CGK-DPS flights on
+  2025-12-15, so a round-trip or multi-city search returns results for the outbound leg and an
+  empty list for every other leg — `dropped_results` on that leg shows the provider flights were
+  correctly rejected for not matching its route. The orchestration is verified in tests against a
+  provider that does have return inventory; authoring extra fixtures would have contradicted the
+  rule the rest of this service follows, which is that provider data is never invented.
+- **Cross-provider price comparison never triggers on the sample data**, because each airline
+  appears through exactly one provider. Covered by unit tests instead.
+- **Rate limiting protects nothing here.** The providers are in-process mocks with no quota; the
+  limiter sits where the outbound HTTP call would be so the constraint is expressed rather than
+  deferred.
+- **No persistence or authentication.** None is needed for this exercise. The
+  `repo/external_client` layer sits under `repo/` so a real datastore adapter (`repo/postgres`,
+  `repo/redis`) could be added beside it without reshuffling anything.
