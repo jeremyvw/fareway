@@ -11,6 +11,14 @@ type SearchResponse struct {
 	SearchCriteria Criteria     `json:"search_criteria"`
 	Metadata       Metadata     `json:"metadata"`
 	Flights        []FlightView `json:"flights"`
+	Legs           []LegResult  `json:"legs,omitempty"`
+}
+
+type LegResult struct {
+	Leg            int          `json:"leg"`
+	SearchCriteria Criteria     `json:"search_criteria"`
+	Metadata       Metadata     `json:"metadata"`
+	Flights        []FlightView `json:"flights"`
 }
 
 type Criteria struct {
@@ -19,6 +27,7 @@ type Criteria struct {
 	DepartureDate string `json:"departure_date"`
 	Passengers    int    `json:"passengers"`
 	CabinClass    string `json:"cabin_class"`
+	TripType      string `json:"trip_type,omitempty"`
 }
 
 type Metadata struct {
@@ -31,12 +40,7 @@ type Metadata struct {
 
 	ProviderStatus []ProviderStatus `json:"provider_status,omitempty"`
 
-	// DroppedResults counts records discarded as unusable or as not matching the route,
-	// date, cabin or passenger count.
-	DroppedResults int `json:"dropped_results,omitempty"`
-	// FilteredResults counts those removed by the caller's
-	// own filters — a different thing, and conflating them would hide which one emptied a
-	// result set.
+	DroppedResults  int `json:"dropped_results,omitempty"`
 	FilteredResults int `json:"filtered_results,omitempty"`
 
 	// MergedDuplicates counts results collapsed because more than one provider sold the same
