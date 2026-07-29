@@ -29,6 +29,7 @@ Written in Go with **no third-party dependencies** — standard library only.
 | Retry with exponential backoff | `util/retry`, wired into the flaky provider |
 | Parallel queries with timeout handling | `usecase/search/search.go` |
 | IDR formatting with thousands separators | `util/currency` |
+| Rate limiting for provider APIs | `util/ratelimit` + `usecase/search/throttle.go` |
 
 ---
 
@@ -196,7 +197,8 @@ internal/
   handler/search/               HTTP: decode, delegate, encode, map errors to status
 
   usecase/search/               orchestration
-    search.go                   FlightClient and Cache ports, fan-out, timeouts, validation
+    search.go                   FlightClient, Cache and Limiter ports, fan-out, timeouts
+    throttle.go                 rate-limiting decorator over a provider
     filter.go                   price / stops / time window / airline / duration
     sort.go                     the seven orderings, with deterministic tie-breaking
     compare.go                  cross-provider price comparison
@@ -206,7 +208,7 @@ internal/
     garuda/  lionair/  batikair/  airasia/
 
   util/                         leaf packages
-    timeutil/  airport/  currency/  normalize/  retry/  cache/
+    timeutil/  airport/  currency/  normalize/  retry/  cache/  ratelimit/
 ```
 
 Dependencies point inward. `model` imports nothing of ours; `util` packages are leaves; no
@@ -357,6 +359,38 @@ network cost to amortize, and a second process would be an operational dependenc
 to install for no behavioural gain. The `Cache` port is declared in the usecase, so a distributed
 store would be a wiring change in `cmd` only.
 
+### Rate limiting is a decorator, not a client concern
+
+Each provider sits behind its own token-bucket limiter, applied in the composition root:
+
+```go
+usecase.Throttle(garuda.New(airport.City), ratelimit.New(20, 10))
+```
+
+A decorator rather than a field on each client, because the limit is a property of the agreement
+with a provider, not of how its responses are parsed — and every client would otherwise repeat the
+same five lines. It can be changed or removed entirely in the wiring without touching provider
+code, and `Throttle(client, nil)` returns the client unchanged.
+
+One limiter per provider, not one shared: quotas are agreed per contract, so a chatty provider
+must not consume another's allowance.
+
+A token bucket rather than a fixed window. Quotas are usually written as "N per second, bursting
+to M", which a bucket expresses directly; a fixed window permits 2N across a boundary. Refill is
+lazy — computed from elapsed time on read — so there is no ticker goroutine to shut down and the
+token count is exact rather than quantized to a tick interval.
+
+`Wait` blocks rather than failing fast, because a caller that is merely early should be slowed
+down, not turned away. The caller's context still bounds it, so a queue that would outlive the
+request budget surfaces as that provider timing out and appears in `provider_status` like any
+other failure. Crucially the provider is never contacted in that case: the quota is not spent on a
+request nobody is waiting for any more.
+
+**These providers are mocked in-process and have no quota to protect.** The limiter sits exactly
+where the outbound HTTP call would be, so the constraint is expressed in the design rather than
+deferred; the configured 20/s with a burst of 10 is deliberately generous enough that a normal
+search is never delayed.
+
 ### Pipeline order
 
 ```
@@ -444,6 +478,7 @@ make cover    # HTML coverage report
 | `util/cache` | 100% |
 | `util/currency` | 100% |
 | `util/normalize` | 100% |
+| `util/ratelimit` | 100% |
 | `usecase/search` | 97.9% |
 | `handler/search` | 95.7% |
 | `util/timeutil` | 95.3% |
@@ -469,6 +504,9 @@ Notable cases, chosen because each one guards a mistake that would otherwise be 
 - **Fan-out parallelism** — four 150ms providers must complete inside 400ms.
 - **Cache hits** are asserted by counting provider invocations, not by reading `cache_hit`.
   Checking the flag alone would pass even if it were hardcoded.
+- **Rate limiting** is asserted by counting provider invocations: a denied call must not reach the
+  provider at all, and a limiter-queued provider must surface as a normal provider failure while
+  the others still return.
 - **A total outage is not cached** — the provider fails, nothing is stored, then it recovers and
   the next search must actually retry it.
 - **Deterministic ordering** — the same search runs five times with staggered provider delays and
@@ -494,5 +532,3 @@ gives a `200` with nine results and `providers_failed: 1`.
   rather than silently ignored. The fixtures contain one route on one date with no return
   inventory, so implementing it would mean fabricating provider data.
 - **Multi-city search** — the same constraint, twice over.
-- **Provider rate limiting** — the providers are in-process function calls; throttling them would
-  demonstrate nothing about handling a real upstream quota.
