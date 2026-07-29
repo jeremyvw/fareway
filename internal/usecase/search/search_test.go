@@ -302,15 +302,13 @@ func TestConnectingItineraryIsMatchedOnItsRealDestination(t *testing.T) {
 
 func TestRequestValidation(t *testing.T) {
 	service := New(DefaultConfig(), nil, fakeClient{name: "A", flights: []model.Flight{flight(t, "A1", 1, 10)}})
-	roundTrip := "2025-12-22"
 
 	for name, mutate := range map[string]func(*model.SearchRequest){
-		"short origin":         func(r *model.SearchRequest) { r.Origin = "CG" },
-		"missing destination":  func(r *model.SearchRequest) { r.Destination = "" },
-		"same endpoints":       func(r *model.SearchRequest) { r.Destination = "CGK" },
-		"missing date":         func(r *model.SearchRequest) { r.DepartureDate = "" },
-		"malformed date":       func(r *model.SearchRequest) { r.DepartureDate = "15-12-2025" },
-		"round trip requested": func(r *model.SearchRequest) { r.ReturnDate = &roundTrip },
+		"short origin":        func(r *model.SearchRequest) { r.Origin = "CG" },
+		"missing destination": func(r *model.SearchRequest) { r.Destination = "" },
+		"same endpoints":      func(r *model.SearchRequest) { r.Destination = "CGK" },
+		"missing date":        func(r *model.SearchRequest) { r.DepartureDate = "" },
+		"malformed date":      func(r *model.SearchRequest) { r.DepartureDate = "15-12-2025" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			req := request()
