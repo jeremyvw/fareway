@@ -1,12 +1,33 @@
 package model
 
+import "strings"
+
+type Leg struct {
+	Origin        string `json:"origin"`
+	Destination   string `json:"destination"`
+	DepartureDate string `json:"departureDate"`
+}
+
+type TripType string
+
+const (
+	TripOneWay    TripType = "one_way"
+	TripRoundTrip TripType = "round_trip"
+	TripMultiCity TripType = "multi_city"
+)
+
+const MaxLegs = 6
+
 type SearchRequest struct {
 	Origin        string  `json:"origin"`
 	Destination   string  `json:"destination"`
 	DepartureDate string  `json:"departureDate"`
 	ReturnDate    *string `json:"returnDate"`
-	Passengers    int     `json:"passengers"`
-	CabinClass    string  `json:"cabinClass"`
+
+	Legs []Leg `json:"legs,omitempty"`
+
+	Passengers int    `json:"passengers"`
+	CabinClass string `json:"cabinClass"`
 
 	Filters Filters    `json:"filters"`
 	Sort    SortOption `json:"sort"`
@@ -45,7 +66,6 @@ const (
 	SortArrivalTime   SortOption = "arrival_time"
 )
 
-// Normalize fills in defaults so downstream layers never see a zero-value request.
 func (r *SearchRequest) Normalize() {
 	if r.Passengers <= 0 {
 		r.Passengers = 1
@@ -56,4 +76,65 @@ func (r *SearchRequest) Normalize() {
 	if r.Sort == "" {
 		r.Sort = SortBestValue
 	}
+
+	if len(r.Legs) == 0 && r.hasFlatForm() {
+		r.Legs = r.legsFromFlatForm()
+	}
+
+	for i := range r.Legs {
+		r.Legs[i].Origin = normalizeIATA(r.Legs[i].Origin)
+		r.Legs[i].Destination = normalizeIATA(r.Legs[i].Destination)
+		r.Legs[i].DepartureDate = strings.TrimSpace(r.Legs[i].DepartureDate)
+	}
+
+	if len(r.Legs) > 0 {
+		r.Origin = r.Legs[0].Origin
+		r.Destination = r.Legs[0].Destination
+		r.DepartureDate = r.Legs[0].DepartureDate
+	}
+}
+
+func (r *SearchRequest) legsFromFlatForm() []Leg {
+	legs := []Leg{{
+		Origin:        r.Origin,
+		Destination:   r.Destination,
+		DepartureDate: r.DepartureDate,
+	}}
+	if r.ReturnDate != nil && strings.TrimSpace(*r.ReturnDate) != "" {
+		legs = append(legs, Leg{
+			Origin:        r.Destination,
+			Destination:   r.Origin,
+			DepartureDate: strings.TrimSpace(*r.ReturnDate),
+		})
+	}
+	return legs
+}
+
+func (r *SearchRequest) hasFlatForm() bool {
+	return strings.TrimSpace(r.Origin) != "" ||
+		strings.TrimSpace(r.Destination) != "" ||
+		strings.TrimSpace(r.DepartureDate) != "" ||
+		(r.ReturnDate != nil && strings.TrimSpace(*r.ReturnDate) != "")
+}
+
+func (r *SearchRequest) HasBothForms() bool {
+	return len(r.Legs) > 0 && r.hasFlatForm()
+}
+
+func (r *SearchRequest) TripType() TripType {
+	switch len(r.Legs) {
+	case 0, 1:
+		return TripOneWay
+	case 2:
+		if r.Legs[1].Origin == r.Legs[0].Destination && r.Legs[1].Destination == r.Legs[0].Origin {
+			return TripRoundTrip
+		}
+		return TripMultiCity
+	default:
+		return TripMultiCity
+	}
+}
+
+func normalizeIATA(code string) string {
+	return strings.ToUpper(strings.TrimSpace(code))
 }

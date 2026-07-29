@@ -65,6 +65,11 @@ type providerResult struct {
 }
 
 func (s *Service) Search(ctx context.Context, req model.SearchRequest) (model.SearchResponse, error) {
+	if req.HasBothForms() {
+		return model.SearchResponse{}, fmt.Errorf(
+			"%w: send either origin/destination/departureDate or a legs array, not both", ErrInvalidRequest)
+	}
+
 	req.Normalize()
 	if err := validateRequest(req); err != nil {
 		return model.SearchResponse{}, err
@@ -233,23 +238,47 @@ func (s *Service) accept(req model.SearchRequest, flights []model.Flight) (kept 
 }
 
 func validateRequest(req model.SearchRequest) error {
-	if len(req.Origin) != 3 {
-		return fmt.Errorf("%w: origin must be a 3-letter IATA code, got %q", ErrInvalidRequest, req.Origin)
+	if len(req.Legs) == 0 {
+		return fmt.Errorf("%w: supply origin, destination and departureDate, or a legs array", ErrInvalidRequest)
 	}
-	if len(req.Destination) != 3 {
-		return fmt.Errorf("%w: destination must be a 3-letter IATA code, got %q", ErrInvalidRequest, req.Destination)
+	if len(req.Legs) > model.MaxLegs {
+		return fmt.Errorf("%w: %d legs requested, the maximum is %d",
+			ErrInvalidRequest, len(req.Legs), model.MaxLegs)
 	}
-	if req.Origin == req.Destination {
-		return fmt.Errorf("%w: origin and destination are both %s", ErrInvalidRequest, req.Origin)
+
+	var previous time.Time
+	for i, leg := range req.Legs {
+		if len(leg.Origin) != 3 {
+			return fmt.Errorf("%w: leg %d origin must be a 3-letter IATA code, got %q",
+				ErrInvalidRequest, i+1, leg.Origin)
+		}
+		if len(leg.Destination) != 3 {
+			return fmt.Errorf("%w: leg %d destination must be a 3-letter IATA code, got %q",
+				ErrInvalidRequest, i+1, leg.Destination)
+		}
+		if leg.Origin == leg.Destination {
+			return fmt.Errorf("%w: leg %d departs and arrives at %s",
+				ErrInvalidRequest, i+1, leg.Origin)
+		}
+		if leg.DepartureDate == "" {
+			return fmt.Errorf("%w: leg %d departureDate is required (YYYY-MM-DD)",
+				ErrInvalidRequest, i+1)
+		}
+
+		departs, err := time.Parse("2006-01-02", leg.DepartureDate)
+		if err != nil {
+			return fmt.Errorf("%w: leg %d departureDate %q must be YYYY-MM-DD",
+				ErrInvalidRequest, i+1, leg.DepartureDate)
+		}
+		if i > 0 && departs.Before(previous) {
+			return fmt.Errorf("%w: leg %d departs %s, before leg %d on %s",
+				ErrInvalidRequest, i+1, leg.DepartureDate, i, req.Legs[i-1].DepartureDate)
+		}
+		previous = departs
 	}
-	if req.DepartureDate == "" {
-		return fmt.Errorf("%w: departureDate is required (YYYY-MM-DD)", ErrInvalidRequest)
-	}
-	if _, err := time.Parse("2006-01-02", req.DepartureDate); err != nil {
-		return fmt.Errorf("%w: departureDate %q must be YYYY-MM-DD", ErrInvalidRequest, req.DepartureDate)
-	}
-	if req.ReturnDate != nil && *req.ReturnDate != "" {
-		return fmt.Errorf("%w: round-trip search is not supported", ErrInvalidRequest)
+
+	if len(req.Legs) > 1 {
+		return fmt.Errorf("%w: %s search is not supported yet", ErrInvalidRequest, req.TripType())
 	}
 	return nil
 }
