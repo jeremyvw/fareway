@@ -74,8 +74,6 @@ func TestTokensRefillOverTime(t *testing.T) {
 	}
 }
 
-// TestRefillIsCappedAtBurst is what separates a token bucket from an unbounded credit: idling for
-// an hour must not buy an hour's worth of calls at once.
 func TestRefillIsCappedAtBurst(t *testing.T) {
 	tick := newClock()
 	l := New(10, 5, WithClock(tick.Now))
@@ -98,7 +96,6 @@ func TestRefillIsCappedAtBurst(t *testing.T) {
 	}
 }
 
-// TestWaitBlocksUntilATokenAccrues uses a real clock, since the point is that it actually waits.
 func TestWaitBlocksUntilATokenAccrues(t *testing.T) {
 	l := New(20, 1) // one token, then one per 50ms
 
@@ -120,7 +117,6 @@ func TestWaitBlocksUntilATokenAccrues(t *testing.T) {
 	}
 }
 
-// TestWaitRespectsContext keeps a queued caller from outliving its own deadline.
 func TestWaitRespectsContext(t *testing.T) {
 	l := New(1, 1) // one token, then one per second
 
@@ -153,8 +149,6 @@ func TestWaitOnACancelledContextDoesNotProceed(t *testing.T) {
 	}
 }
 
-// TestUnlimitedNeverBlocks covers the misconfiguration path: a zero rate must not deadlock every
-// provider call.
 func TestUnlimitedNeverBlocks(t *testing.T) {
 	for name, l := range map[string]*Limiter{
 		"zero rate":      New(0, 5),
@@ -178,8 +172,6 @@ func TestUnlimitedNeverBlocks(t *testing.T) {
 	}
 }
 
-// TestConcurrentUseGrantsExactlyTheBurst is the reason for the mutex: one limiter is shared by
-// every in-flight request for that provider. Meaningful under -race.
 func TestConcurrentUseGrantsExactlyTheBurst(t *testing.T) {
 	const burst = 10
 	// Rate low enough that no token accrues during the test.
