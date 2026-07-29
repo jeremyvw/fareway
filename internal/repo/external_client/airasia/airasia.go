@@ -25,6 +25,7 @@ const ProviderName = "AirAsia"
 
 const currencyCode = "IDR"
 
+// The assignment specifies AirAsia as fast but flaky: a 90% success rate.
 const (
 	defaultMinDelay    = 50 * time.Millisecond
 	defaultMaxDelay    = 150 * time.Millisecond
@@ -234,7 +235,7 @@ func (c *Client) stopovers(raw flight) []model.Stopover {
 // computed 260.
 func (c *Client) recordDiscrepancies(out *model.Flight, raw flight) {
 	if raw.DurationHours > 0 {
-		declared := int(math.Round(raw.DurationHours * 60))
+		declared := int(math.Round(raw.DurationHours * timeutil.MinutesPerHour))
 		if declared != out.TotalMinutes() {
 			out.Warn("provider declared %.2fh (%d min) but timestamps give %d min",
 				raw.DurationHours, declared, out.TotalMinutes())

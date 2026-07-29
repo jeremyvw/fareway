@@ -14,6 +14,8 @@ import (
 	_ "time/tzdata"
 )
 
+const MinutesPerHour = 60
+
 const (
 	// LayoutCompactOffset is RFC3339 with no colon in the offset: "2025-12-15T07:15:00+0700".
 	LayoutCompactOffset = "2006-01-02T15:04:05-0700"
@@ -99,7 +101,7 @@ func FormatDuration(minutes int) string {
 	if minutes < 0 {
 		return "-" + FormatDuration(-minutes)
 	}
-	h, m := minutes/60, minutes%60
+	h, m := minutes/MinutesPerHour, minutes%MinutesPerHour
 	switch {
 	case h == 0:
 		return fmt.Sprintf("%dm", m)
@@ -113,7 +115,7 @@ func FormatDuration(minutes int) string {
 // MinutesSinceMidnight gives an instant's local wall-clock position, for time-of-day
 // filters. A 20:35+08:00 arrival reads as 20:35, not its UTC equivalent.
 func MinutesSinceMidnight(t time.Time) int {
-	return t.Hour()*60 + t.Minute()
+	return t.Hour()*MinutesPerHour + t.Minute()
 }
 
 // ParseClock turns "HH:MM" into minutes since midnight.
@@ -122,5 +124,5 @@ func ParseClock(value string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("parse time-of-day %q, want HH:MM: %w", value, err)
 	}
-	return t.Hour()*60 + t.Minute(), nil
+	return t.Hour()*MinutesPerHour + t.Minute(), nil
 }

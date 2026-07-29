@@ -7,6 +7,22 @@ import (
 	"time"
 )
 
+// The default policy, sized for a provider that fails roughly one call in ten: two retries, far
+// enough apart to clear a blip but well inside a request budget.
+const (
+	defaultAttempts  = 3
+	defaultBaseDelay = 50 * time.Millisecond
+	defaultMaxDelay  = 200 * time.Millisecond
+
+	// backoffFactor is how much the wait grows after each failure. Doubling is the usual
+	// choice: fast enough to back off meaningfully, slow enough not to overshoot the cap in
+	// one step.
+	backoffFactor = 2
+
+	// minAttempts keeps a misconfigured policy running the operation once rather than never.
+	minAttempts = 1
+)
+
 // Config describes a backoff policy. Attempts counts the first try, so Attempts: 3 means
 // one call and two retries.
 type Config struct {
@@ -18,7 +34,7 @@ type Config struct {
 // Default is a short policy suited to a provider that fails roughly one call in ten: two
 // retries, far enough apart to clear a blip but well inside a request budget.
 func Default() Config {
-	return Config{Attempts: 3, Base: 50 * time.Millisecond, Max: 200 * time.Millisecond}
+	return Config{Attempts: defaultAttempts, Base: defaultBaseDelay, Max: defaultMaxDelay}
 }
 
 // Do runs fn until it succeeds or the attempts are exhausted, returning the last error.
@@ -28,8 +44,8 @@ func Default() Config {
 func Do[T any](ctx context.Context, cfg Config, fn func(context.Context) (T, error)) (T, error) {
 	var zero T
 
-	if cfg.Attempts < 1 {
-		cfg.Attempts = 1
+	if cfg.Attempts < minAttempts {
+		cfg.Attempts = minAttempts
 	}
 	if cfg.Base <= 0 {
 		cfg.Base = time.Millisecond
@@ -61,7 +77,7 @@ func Do[T any](ctx context.Context, cfg Config, fn func(context.Context) (T, err
 		if err := sleep(ctx, delay); err != nil {
 			return zero, wrap(err, attempt, lastErr)
 		}
-		if delay *= 2; delay > cfg.Max {
+		if delay *= backoffFactor; delay > cfg.Max {
 			delay = cfg.Max
 		}
 	}

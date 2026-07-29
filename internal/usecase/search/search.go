@@ -22,6 +22,7 @@ type Cache interface {
 	Set(key string, value Aggregate)
 }
 
+// Aggregate is everything the fan-out produced, before any request-specific filtering.
 type Aggregate struct {
 	Flights  []model.Flight
 	Statuses []model.ProviderStatus
@@ -36,10 +37,15 @@ type Config struct {
 	OverallTimeout time.Duration
 }
 
+const (
+	defaultProviderTimeout = 800 * time.Millisecond
+	defaultOverallTimeout  = 2 * time.Second
+)
+
 func DefaultConfig() Config {
 	return Config{
-		ProviderTimeout: 800 * time.Millisecond,
-		OverallTimeout:  2 * time.Second,
+		ProviderTimeout: defaultProviderTimeout,
+		OverallTimeout:  defaultOverallTimeout,
 	}
 }
 
@@ -63,6 +69,7 @@ type providerResult struct {
 	duration time.Duration
 }
 
+// Search runs every leg of the request and returns the results.
 func (s *Service) Search(ctx context.Context, req model.SearchRequest) (model.SearchResponse, error) {
 	if req.HasBothForms() {
 		return model.SearchResponse{}, fmt.Errorf(

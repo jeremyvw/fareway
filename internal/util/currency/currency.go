@@ -7,9 +7,10 @@ import (
 
 const IDR = "IDR"
 
+const digitsPerGroup = 3
+
 const idrSeparator = "."
 
-// FormatIDR renders an amount in rupiah, e.g. 1250000 becomes "Rp1.250.000".
 func FormatIDR(amount int64) string {
 	return "Rp" + Group(amount, idrSeparator)
 }
@@ -32,21 +33,21 @@ func Group(amount int64, separator string) string {
 	if strings.HasPrefix(digits, "-") {
 		sign, digits = "-", digits[1:]
 	}
-	if len(digits) <= 3 {
+	if len(digits) <= digitsPerGroup {
 		return sign + digits
 	}
 
 	// Walk from the right so the leftmost group absorbs the remainder: 1250000 groups as
 	// 1|250|000, not 125|000|0.
 	var b strings.Builder
-	lead := len(digits) % 3
+	lead := len(digits) % digitsPerGroup
 	if lead == 0 {
-		lead = 3
+		lead = digitsPerGroup
 	}
 	b.WriteString(digits[:lead])
-	for i := lead; i < len(digits); i += 3 {
+	for i := lead; i < len(digits); i += digitsPerGroup {
 		b.WriteString(separator)
-		b.WriteString(digits[i : i+3])
+		b.WriteString(digits[i : i+digitsPerGroup])
 	}
 	return sign + b.String()
 }

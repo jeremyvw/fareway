@@ -23,6 +23,10 @@ const (
 // because "87.5" reads as a rating while a raw 0-1 penalty reads as an error metric.
 const maxScore = 100.0
 
+// scoreRounding keeps scores to one decimal place. The next digit is noise given the weights are
+// a judgement call, and it keeps the JSON readable.
+const scoreRounding = 10
+
 // scoreBestValue attaches a best-value score to every flight, in place.
 //
 // Price, total duration and stop count are each min-max normalized across the current result
@@ -63,7 +67,7 @@ func scoreBestValue(flights []model.Flight) {
 
 		// Rounded to one decimal: the next digit is noise given the weights are a judgement
 		// call, and it keeps the JSON readable.
-		flights[i].BestValueScore = math.Round((1-penalty)*maxScore*10) / 10
+		flights[i].BestValueScore = math.Round((1-penalty)*maxScore*scoreRounding) / scoreRounding
 	}
 }
 

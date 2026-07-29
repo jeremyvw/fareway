@@ -23,6 +23,13 @@ var mockResponse []byte
 // ProviderName is how this provider is reported in results and metadata.
 const ProviderName = "Batik Air"
 
+// The provider repeats an HTTP status inside its response body. Anything outside the 2xx range is
+// a failure even though the transport succeeded.
+const (
+	minSuccessStatus = 200
+	maxSuccessStatus = 299
+)
+
 // The assignment specifies Batik Air as the slowest provider.
 const (
 	defaultMinDelay = 200 * time.Millisecond
@@ -90,7 +97,7 @@ func (c *Client) FetchFlights(ctx context.Context, _ model.SearchRequest) ([]mod
 	}
 	// The provider repeats an HTTP status in the body; anything outside 2xx is a failure
 	// even though the transport succeeded.
-	if payload.Code < 200 || payload.Code > 299 {
+	if payload.Code < minSuccessStatus || payload.Code > maxSuccessStatus {
 		return nil, fmt.Errorf("%s: provider returned code %d (%s)", ProviderName, payload.Code, payload.Message)
 	}
 
@@ -230,7 +237,7 @@ func parseProseDuration(value string) int {
 	}
 	hours, _ := strconv.Atoi(match[1])
 	minutes, _ := strconv.Atoi(match[2])
-	return hours*60 + minutes
+	return hours*timeutil.MinutesPerHour + minutes
 }
 
 // bookingClasses maps IATA booking-class letters to cabin names. Batik Air is the only
